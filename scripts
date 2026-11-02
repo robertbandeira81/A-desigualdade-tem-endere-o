@@ -1,0 +1,2316 @@
+# ============================================================
+# ARTIGO: A DESIGUALDADE TEM ENDEREÇO
+# Raça, posição socioeconômica e esgotamento sanitário
+# em Teresina - Censo Demográfico 2022
+# Autor: Francisco Robert Bandeira Gomes da Silva
+# ============================================================
+
+
+# ============================================================
+# 1. PACOTES
+# ============================================================
+
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+
+library(pacman)
+
+pacman::p_load(
+  censobr,
+  geobr,
+  dplyr,
+  tidyr,
+  ggplot2,
+  sf,
+  patchwork,
+  viridis,
+  scales,
+  broom,
+  gt,
+  splines,
+  stringr
+)
+
+
+# Pasta para os produtos da análise
+dir.create(
+  "resultados",
+  showWarnings = FALSE
+)
+
+
+# ============================================================
+# 2. DADOS DO CENSO DEMOGRÁFICO 2022
+# ============================================================
+
+# Pessoas
+pessoas_2022 <- censobr::read_tracts(
+  year = 2022,
+  dataset = "Pessoas",
+  as_data_frame = TRUE
+)
+
+
+# Domicílios
+domicilios_2022 <- censobr::read_tracts(
+  year = 2022,
+  dataset = "Domicilio",
+  as_data_frame = TRUE
+)
+
+
+# Rendimento das pessoas responsáveis pelos domicílios
+renda_2022 <- censobr::read_tracts(
+  year = 2022,
+  dataset = "ResponsavelRenda",
+  as_data_frame = TRUE
+)
+
+
+# ============================================================
+# 3. FILTRAR TERESINA
+# ============================================================
+
+cod_teresina <- 2211001
+
+
+pessoas_the <- pessoas_2022 |>
+  filter(
+    code_muni == cod_teresina
+  )
+
+
+domicilios_the <- domicilios_2022 |>
+  filter(
+    code_muni == cod_teresina
+  )
+
+
+renda_the <- renda_2022 |>
+  filter(
+    code_muni == cod_teresina
+  )
+
+
+# Conferência do número de setores
+n_distinct(
+  pessoas_the$code_tract
+)
+
+n_distinct(
+  domicilios_the$code_tract
+)
+
+n_distinct(
+  renda_the$code_tract
+)
+
+
+# ============================================================
+# 4. COMPOSIÇÃO RACIAL
+# ============================================================
+
+racial <- pessoas_the |>
+  transmute(
+    code_tract = as.character(code_tract),
+    
+    total_moradores = demografia_V01006,
+    
+    branca = raca_V01317,
+    preta = raca_V01318,
+    amarela = raca_V01319,
+    parda = raca_V01320,
+    indigena = raca_V01321
+  )
+
+
+# ------------------------------------------------------------
+# Tratamento das pequenas frequências suprimidas
+# ------------------------------------------------------------
+#
+# Para as células suprimidas cujo valor possível é 1 ou 2,
+# utiliza-se 1,5 como ponto médio na análise principal.
+# Os limites inferior e superior são preservados para
+# verificações de sensibilidade.
+# ------------------------------------------------------------
+
+racial <- racial |>
+  mutate(
+    
+    preta_suprimida =
+      is.na(preta),
+    
+    parda_suprimida =
+      is.na(parda),
+    
+    preta_rec =
+      if_else(
+        preta_suprimida,
+        1.5,
+        preta
+      ),
+    
+    parda_rec =
+      if_else(
+        parda_suprimida,
+        1.5,
+        parda
+      ),
+    
+    preta_min =
+      if_else(
+        preta_suprimida,
+        1,
+        preta
+      ),
+    
+    parda_min =
+      if_else(
+        parda_suprimida,
+        1,
+        parda
+      ),
+    
+    preta_max =
+      if_else(
+        preta_suprimida,
+        2,
+        preta
+      ),
+    
+    parda_max =
+      if_else(
+        parda_suprimida,
+        2,
+        parda
+      ),
+    
+    negra =
+      preta_rec +
+      parda_rec,
+    
+    negra_min =
+      preta_min +
+      parda_min,
+    
+    negra_max =
+      preta_max +
+      parda_max,
+    
+    pct_preta =
+      100 *
+      preta_rec /
+      total_moradores,
+    
+    pct_parda =
+      100 *
+      parda_rec /
+      total_moradores,
+    
+    pct_negra =
+      100 *
+      negra /
+      total_moradores,
+    
+    pct_negra_min =
+      100 *
+      negra_min /
+      total_moradores,
+    
+    pct_negra_max =
+      100 *
+      negra_max /
+      total_moradores
+  )
+
+
+# Conferência das supressões
+auditoria_raca <- racial |>
+  summarise(
+    setores = n(),
+    
+    supressoes_preta =
+      sum(
+        preta_suprimida,
+        na.rm = TRUE
+      ),
+    
+    supressoes_parda =
+      sum(
+        parda_suprimida,
+        na.rm = TRUE
+      )
+  )
+
+
+auditoria_raca
+
+
+# ============================================================
+# 5. RENDIMENTO
+# ============================================================
+
+# Rendimento nominal médio mensal das pessoas responsáveis
+# pelos domicílios que possuíam rendimento.
+
+renda <- renda_the |>
+  transmute(
+    code_tract =
+      as.character(code_tract),
+    
+    renda_resp =
+      V06004
+  )
+
+
+# ============================================================
+# 6. ESGOTAMENTO SANITÁRIO
+# ============================================================
+
+esgoto <- domicilios_the |>
+  transmute(
+    
+    code_tract =
+      as.character(code_tract),
+    
+    # Total de domicílios particulares permanentes ocupados
+    dpp =
+      domicilio01_V00001,
+    
+    # Destinação do esgoto
+    rede =
+      domicilio02_V00309,
+    
+    fossa_ligada =
+      domicilio02_V00310,
+    
+    fossa_nao_ligada =
+      domicilio02_V00311,
+    
+    rudimentar =
+      domicilio02_V00312,
+    
+    vala =
+      domicilio02_V00313,
+    
+    rio_lago_mar =
+      domicilio02_V00314,
+    
+    outra =
+      domicilio02_V00315,
+    
+    sem_banheiro =
+      domicilio02_V00316
+  )
+
+
+# ============================================================
+# 7. RECONSTRUÇÃO DAS SUPRESSÕES DO ESGOTAMENTO
+# ============================================================
+
+# Categorias consideradas adequadas na variável analítica
+vars_adequadas <- c(
+  "rede",
+  "fossa_ligada",
+  "fossa_nao_ligada"
+)
+
+
+# Categorias consideradas inadequadas
+vars_inadequadas <- c(
+  "rudimentar",
+  "vala",
+  "rio_lago_mar",
+  "outra",
+  "sem_banheiro"
+)
+
+
+esgoto_rec <- esgoto |>
+  rowwise() |>
+  mutate(
+    
+    soma_adequada_obs =
+      sum(
+        c_across(
+          all_of(vars_adequadas)
+        ),
+        na.rm = TRUE
+      ),
+    
+    soma_inadequada_obs =
+      sum(
+        c_across(
+          all_of(vars_inadequadas)
+        ),
+        na.rm = TRUE
+      ),
+    
+    soma_obs =
+      soma_adequada_obs +
+      soma_inadequada_obs,
+    
+    n_miss_adequada =
+      sum(
+        is.na(
+          c_across(
+            all_of(vars_adequadas)
+          )
+        )
+      ),
+    
+    n_miss_inadequada =
+      sum(
+        is.na(
+          c_across(
+            all_of(vars_inadequadas)
+          )
+        )
+      ),
+    
+    n_miss_total =
+      n_miss_adequada +
+      n_miss_inadequada,
+    
+    faltante =
+      dpp -
+      soma_obs,
+    
+    # Limite inferior da quantidade de domicílios inadequados
+    # entre as categorias suprimidas
+    
+    inad_suprimida_min =
+      case_when(
+        
+        n_miss_inadequada == 0 ~
+          0,
+        
+        TRUE ~
+          max(
+            n_miss_inadequada,
+            faltante -
+              2 * n_miss_adequada
+          )
+      ),
+    
+    # Limite superior
+    
+    inad_suprimida_max =
+      case_when(
+        
+        n_miss_inadequada == 0 ~
+          0,
+        
+        TRUE ~
+          min(
+            2 * n_miss_inadequada,
+            faltante -
+              n_miss_adequada
+          )
+      ),
+    
+    esgoto_inad_min =
+      soma_inadequada_obs +
+      inad_suprimida_min,
+    
+    esgoto_inad_max =
+      soma_inadequada_obs +
+      inad_suprimida_max,
+    
+    # Ponto médio do intervalo possível
+    
+    esgoto_inad =
+      (
+        esgoto_inad_min +
+          esgoto_inad_max
+      ) / 2,
+    
+    largura_intervalo =
+      esgoto_inad_max -
+      esgoto_inad_min,
+    
+    pct_esgoto_inad =
+      100 *
+      esgoto_inad /
+      dpp
+  ) |>
+  ungroup()
+
+
+# ============================================================
+# 8. AUDITORIA DA RECONSTRUÇÃO
+# ============================================================
+
+auditoria_esgoto <- esgoto_rec |>
+  summarise(
+    
+    setores = n(),
+    
+    faltante_negativo =
+      sum(
+        faltante < 0,
+        na.rm = TRUE
+      ),
+    
+    intervalos_invalidos =
+      sum(
+        esgoto_inad_min >
+          esgoto_inad_max,
+        na.rm = TRUE
+      ),
+    
+    percentual_fora_limite =
+      sum(
+        pct_esgoto_inad < 0 |
+          pct_esgoto_inad > 100,
+        na.rm = TRUE
+      ),
+    
+    supressao_incompativel =
+      sum(
+        n_miss_total > 0 &
+          (
+            faltante <
+              n_miss_total |
+              faltante >
+              2 * n_miss_total
+          ),
+        na.rm = TRUE
+      )
+  )
+
+
+auditoria_esgoto
+
+
+# Reconstrução após o critério analítico de pelo menos
+# cinco domicílios particulares permanentes ocupados
+
+auditoria_intervalos <- esgoto_rec |>
+  filter(
+    dpp >= 5
+  ) |>
+  summarise(
+    
+    setores = n(),
+    
+    reconstrucao_exata =
+      sum(
+        largura_intervalo == 0,
+        na.rm = TRUE
+      ),
+    
+    reconstrucao_intervalar =
+      sum(
+        largura_intervalo > 0,
+        na.rm = TRUE
+      ),
+    
+    largura_media =
+      mean(
+        largura_intervalo,
+        na.rm = TRUE
+      ),
+    
+    largura_maxima =
+      max(
+        largura_intervalo,
+        na.rm = TRUE
+      )
+  )
+
+
+auditoria_intervalos
+
+
+# ============================================================
+# 9. BASE ANALÍTICA FINAL
+# ============================================================
+
+dados_final <- racial |>
+  left_join(
+    renda,
+    by = "code_tract"
+  ) |>
+  left_join(
+    
+    esgoto_rec |>
+      select(
+        code_tract,
+        dpp,
+        esgoto_inad,
+        esgoto_inad_min,
+        esgoto_inad_max,
+        largura_intervalo,
+        pct_esgoto_inad
+      ),
+    
+    by = "code_tract"
+  ) |>
+  filter(
+    dpp >= 5
+  )
+
+
+# ------------------------------------------------------------
+# Auditoria da base
+# ------------------------------------------------------------
+
+auditoria_base <- dados_final |>
+  summarise(
+    
+    setores = n(),
+    
+    miss_negra =
+      sum(
+        is.na(pct_negra)
+      ),
+    
+    miss_preta =
+      sum(
+        is.na(pct_preta)
+      ),
+    
+    miss_parda =
+      sum(
+        is.na(pct_parda)
+      ),
+    
+    miss_renda =
+      sum(
+        is.na(renda_resp)
+      ),
+    
+    miss_esgoto =
+      sum(
+        is.na(pct_esgoto_inad)
+      ),
+    
+    renda_nao_positiva =
+      sum(
+        renda_resp <= 0,
+        na.rm = TRUE
+      )
+  )
+
+
+auditoria_base
+
+
+# ============================================================
+# 10. VARIÁVEIS ANALÍTICAS
+# ============================================================
+
+dados_final <- dados_final |>
+  mutate(
+    
+    # Incremento de dez pontos percentuais
+    negra_10pp =
+      pct_negra / 10,
+    
+    # Logaritmo natural do rendimento
+    log_renda =
+      log(renda_resp),
+    
+    # Composição racial centralizada e expressa
+    # em unidades de dez pontos percentuais
+    negra_c =
+      (
+        pct_negra -
+          mean(
+            pct_negra,
+            na.rm = TRUE
+          )
+      ) / 10
+  )
+
+
+# Resumos
+summary(
+  dados_final$pct_negra
+)
+
+summary(
+  dados_final$renda_resp
+)
+
+summary(
+  dados_final$log_renda
+)
+
+summary(
+  dados_final$pct_esgoto_inad
+)
+
+
+# Salvar a base analítica
+saveRDS(
+  dados_final,
+  "resultados/dados_final.rds"
+)
+
+
+write.csv(
+  dados_final,
+  "resultados/base_analitica_1493_setores.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 11. QUARTIS DE POPULAÇÃO NEGRA
+# ============================================================
+
+dados_quartis <- dados_final |>
+  mutate(
+    quartil_negra =
+      ntile(
+        pct_negra,
+        4
+      )
+  )
+
+
+tabela_quartis <- dados_quartis |>
+  group_by(
+    quartil_negra
+  ) |>
+  summarise(
+    
+    setores =
+      n(),
+    
+    pct_negra =
+      mean(
+        pct_negra,
+        na.rm = TRUE
+      ),
+    
+    pct_preta =
+      mean(
+        pct_preta,
+        na.rm = TRUE
+      ),
+    
+    pct_parda =
+      mean(
+        pct_parda,
+        na.rm = TRUE
+      ),
+    
+    renda_media =
+      mean(
+        renda_resp,
+        na.rm = TRUE
+      ),
+    
+    esgoto_inadequado =
+      mean(
+        pct_esgoto_inad,
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  )
+
+
+tabela_quartis
+
+
+# ============================================================
+# 12. CORRELAÇÕES DE SPEARMAN
+# ============================================================
+
+spearman_resultado <- function(
+    x,
+    y,
+    associacao) {
+  
+  completos <-
+    complete.cases(
+      x,
+      y
+    )
+  
+  teste <- cor.test(
+    x[completos],
+    y[completos],
+    method = "spearman",
+    exact = FALSE
+  )
+  
+  tibble(
+    associacao = associacao,
+    n = sum(completos),
+    rho = unname(
+      teste$estimate
+    ),
+    p = teste$p.value
+  )
+}
+
+
+resultados_spearman <- bind_rows(
+  
+  spearman_resultado(
+    dados_final$pct_negra,
+    dados_final$pct_esgoto_inad,
+    "População negra × esgotamento inadequado"
+  ),
+  
+  spearman_resultado(
+    dados_final$pct_preta,
+    dados_final$pct_esgoto_inad,
+    "População preta × esgotamento inadequado"
+  ),
+  
+  spearman_resultado(
+    dados_final$pct_parda,
+    dados_final$pct_esgoto_inad,
+    "População parda × esgotamento inadequado"
+  ),
+  
+  spearman_resultado(
+    dados_final$pct_negra,
+    dados_final$renda_resp,
+    "População negra × rendimento"
+  )
+)
+
+
+resultados_spearman
+
+
+# Versão formatada
+resultados_spearman_formatados <-
+  resultados_spearman |>
+  mutate(
+    
+    rho =
+      round(
+        rho,
+        3
+      ),
+    
+    p_formatado =
+      case_when(
+        
+        p < 0.001 ~
+          "< 0,001",
+        
+        TRUE ~
+          format(
+            round(
+              p,
+              3
+            ),
+            decimal.mark = ","
+          )
+      )
+  ) |>
+  select(
+    associacao,
+    n,
+    rho,
+    p_formatado
+  )
+
+
+resultados_spearman_formatados
+
+
+write.csv(
+  resultados_spearman,
+  "resultados/correlacoes_spearman.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 13. MODELO 1 - COMPOSIÇÃO RACIAL
+# ============================================================
+
+m1 <- glm(
+  
+  pct_esgoto_inad / 100 ~
+    negra_10pp,
+  
+  family =
+    quasibinomial(
+      link = "logit"
+    ),
+  
+  weights =
+    dpp,
+  
+  data =
+    dados_final
+)
+
+
+summary(m1)
+
+
+# ============================================================
+# 14. MODELO 2 - COMPOSIÇÃO RACIAL + RENDIMENTO
+# ============================================================
+
+m2 <- glm(
+  
+  pct_esgoto_inad / 100 ~
+    negra_10pp +
+    log_renda,
+  
+  family =
+    quasibinomial(
+      link = "logit"
+    ),
+  
+  weights =
+    dpp,
+  
+  data =
+    dados_final
+)
+
+
+summary(m2)
+
+
+# ------------------------------------------------------------
+# Coeficientes
+# ------------------------------------------------------------
+
+coef(
+  summary(m1)
+)
+
+coef(
+  summary(m2)
+)
+
+
+# ------------------------------------------------------------
+# Dispersão
+# ------------------------------------------------------------
+
+summary(m1)$dispersion
+
+summary(m2)$dispersion
+
+
+# ------------------------------------------------------------
+# Razões de chances
+# ------------------------------------------------------------
+
+exp(
+  coef(m1)["negra_10pp"]
+)
+
+exp(
+  coef(m2)["negra_10pp"]
+)
+
+
+# ------------------------------------------------------------
+# Redução percentual do coeficiente racial
+# ------------------------------------------------------------
+
+b1 <-
+  coef(m1)["negra_10pp"]
+
+b2 <-
+  coef(m2)["negra_10pp"]
+
+
+reducao_percentual <-
+  100 *
+  (
+    b1 - b2
+  ) /
+  b1
+
+
+reducao_percentual
+
+
+# ============================================================
+# 15. NÃO LINEARIDADE DO RENDIMENTO
+# ============================================================
+
+m_linear_aditivo <- glm(
+  
+  pct_esgoto_inad / 100 ~
+    negra_c +
+    log_renda,
+  
+  family =
+    quasibinomial(
+      link = "logit"
+    ),
+  
+  weights =
+    dpp,
+  
+  data =
+    dados_final
+)
+
+
+m_spline_aditivo <- glm(
+  
+  pct_esgoto_inad / 100 ~
+    negra_c +
+    ns(
+      log_renda,
+      df = 3
+    ),
+  
+  family =
+    quasibinomial(
+      link = "logit"
+    ),
+  
+  weights =
+    dpp,
+  
+  data =
+    dados_final
+)
+
+
+teste_spline <- anova(
+  
+  m_linear_aditivo,
+  m_spline_aditivo,
+  
+  test = "F"
+)
+
+
+teste_spline
+
+
+summary(
+  m_spline_aditivo
+)
+
+
+summary(
+  m_spline_aditivo
+)$dispersion
+
+
+# ============================================================
+# 16. INTERAÇÃO FLEXÍVEL ENTRE RAÇA E RENDIMENTO
+# ============================================================
+
+m_spline_interacao <- glm(
+  
+  pct_esgoto_inad / 100 ~
+    negra_c *
+    ns(
+      log_renda,
+      df = 3
+    ),
+  
+  family =
+    quasibinomial(
+      link = "logit"
+    ),
+  
+  weights =
+    dpp,
+  
+  data =
+    dados_final
+)
+
+
+teste_interacao <- anova(
+  
+  m_spline_aditivo,
+  m_spline_interacao,
+  
+  test = "F"
+)
+
+
+teste_interacao
+
+
+# ------------------------------------------------------------
+# Resultados dos testes complementares
+# ------------------------------------------------------------
+
+resultados_testes <- tibble(
+  
+  teste = c(
+    "Não linearidade do rendimento",
+    "Interação população negra × rendimento"
+  ),
+  
+  graus_liberdade = c(
+    teste_spline$Df[2],
+    teste_interacao$Df[2]
+  ),
+  
+  deviance = c(
+    teste_spline$Deviance[2],
+    teste_interacao$Deviance[2]
+  ),
+  
+  F = c(
+    teste_spline$F[2],
+    teste_interacao$F[2]
+  ),
+  
+  p = c(
+    teste_spline$`Pr(>F)`[2],
+    teste_interacao$`Pr(>F)`[2]
+  )
+)
+
+
+resultados_testes
+
+
+write.csv(
+  resultados_testes,
+  "resultados/testes_complementares.csv",
+  row.names = FALSE
+)
+
+
+# Salvar modelos
+saveRDS(
+  list(
+    m1 = m1,
+    m2 = m2,
+    m_linear_aditivo = m_linear_aditivo,
+    m_spline_aditivo = m_spline_aditivo,
+    m_spline_interacao = m_spline_interacao
+  ),
+  "resultados/modelos.rds"
+)
+
+
+# ============================================================
+# 17. TABELAS DO ARTIGO
+# ============================================================
+
+
+# ============================================================
+# 17.1 TABELA 1
+# ============================================================
+
+tabela_1 <- tabela_quartis |>
+  mutate(
+    
+    quartil_negra =
+      paste0(
+        quartil_negra,
+        "º quartil"
+      )
+  ) |>
+  gt() |>
+  tab_header(
+    
+    title =
+      "Tabela 1 - Composição racial, rendimento e precariedade do esgotamento segundo quartis de população negra"
+  ) |>
+  cols_label(
+    
+    quartil_negra =
+      "Quartil",
+    
+    setores =
+      "Setores",
+    
+    pct_negra =
+      "População negra (%)",
+    
+    pct_preta =
+      "Pretos (%)",
+    
+    pct_parda =
+      "Pardos (%)",
+    
+    renda_media =
+      "Rendimento médio (R$)",
+    
+    esgoto_inadequado =
+      "Esgotamento inadequado (%)"
+  ) |>
+  fmt_number(
+    
+    columns = c(
+      pct_negra,
+      pct_preta,
+      pct_parda,
+      esgoto_inadequado
+    ),
+    
+    decimals = 1,
+    
+    dec_mark = ",",
+    
+    sep_mark = "."
+  ) |>
+  fmt_number(
+    
+    columns =
+      renda_media,
+    
+    decimals = 0,
+    
+    dec_mark = ",",
+    
+    sep_mark = "."
+  ) |>
+  tab_source_note(
+    
+    source_note =
+      "Fonte: elaboração própria a partir do Censo Demográfico 2022/IBGE."
+  )
+
+
+tabela_1
+
+
+# Exportação
+gtsave(
+  tabela_1,
+  "resultados/tabela_1_quartis.html"
+)
+
+
+write.csv(
+  tabela_quartis,
+  "resultados/tabela_1_quartis.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 17.2 FUNÇÕES AUXILIARES PARA A TABELA 2
+# ============================================================
+
+numero_pt <- function(
+    x,
+    digitos = 3) {
+  
+  gsub(
+    "\\.",
+    ",",
+    sprintf(
+      paste0(
+        "%.",
+        digitos,
+        "f"
+      ),
+      x
+    )
+  )
+}
+
+
+fmt_coef <- function(
+    modelo,
+    termo) {
+  
+  x <-
+    coef(
+      summary(
+        modelo
+      )
+    )[termo, ]
+  
+  p <-
+    x["Pr(>|t|)"]
+  
+  estrela <-
+    case_when(
+      
+      p < 0.001 ~
+        "***",
+      
+      p < 0.01 ~
+        "**",
+      
+      p < 0.05 ~
+        "*",
+      
+      TRUE ~
+        ""
+    )
+  
+  paste0(
+    
+    numero_pt(
+      x["Estimate"],
+      3
+    ),
+    
+    estrela,
+    
+    " (",
+    
+    numero_pt(
+      x["Std. Error"],
+      3
+    ),
+    
+    ")"
+  )
+}
+
+
+fmt_or_ic <- function(
+    modelo,
+    termo) {
+  
+  x <-
+    coef(
+      summary(
+        modelo
+      )
+    )[termo, ]
+  
+  b <-
+    x["Estimate"]
+  
+  se <-
+    x["Std. Error"]
+  
+  or <-
+    exp(b)
+  
+  li <-
+    exp(
+      b -
+        1.96 * se
+    )
+  
+  ls <-
+    exp(
+      b +
+        1.96 * se
+    )
+  
+  paste0(
+    
+    numero_pt(
+      or,
+      2
+    ),
+    
+    " [",
+    
+    numero_pt(
+      li,
+      2
+    ),
+    
+    "; ",
+    
+    numero_pt(
+      ls,
+      2
+    ),
+    
+    "]"
+  )
+}
+
+
+# ============================================================
+# 17.3 TABELA 2
+# ============================================================
+
+tabela_modelos <- tibble(
+  
+  indicador = c(
+    
+    "População negra (+10 p.p.)",
+    
+    "Log do rendimento médio",
+    
+    "OR população negra (+10 p.p.) [IC95%]",
+    
+    "N",
+    
+    "Dispersão",
+    
+    "Deviância residual"
+  ),
+  
+  modelo_1 = c(
+    
+    fmt_coef(
+      m1,
+      "negra_10pp"
+    ),
+    
+    "—",
+    
+    fmt_or_ic(
+      m1,
+      "negra_10pp"
+    ),
+    
+    as.character(
+      nobs(m1)
+    ),
+    
+    numero_pt(
+      summary(m1)$dispersion,
+      2
+    ),
+    
+    numero_pt(
+      deviance(m1),
+      0
+    )
+  ),
+  
+  modelo_2 = c(
+    
+    fmt_coef(
+      m2,
+      "negra_10pp"
+    ),
+    
+    fmt_coef(
+      m2,
+      "log_renda"
+    ),
+    
+    fmt_or_ic(
+      m2,
+      "negra_10pp"
+    ),
+    
+    as.character(
+      nobs(m2)
+    ),
+    
+    numero_pt(
+      summary(m2)$dispersion,
+      2
+    ),
+    
+    numero_pt(
+      deviance(m2),
+      0
+    )
+  )
+)
+
+
+tabela_modelos
+
+
+tabela_2 <- tabela_modelos |>
+  gt() |>
+  cols_label(
+    
+    indicador =
+      "Variável / estatística",
+    
+    modelo_1 =
+      "Modelo 1",
+    
+    modelo_2 =
+      "Modelo 2"
+  ) |>
+  tab_header(
+    
+    title =
+      "Tabela 2 - Modelos quasibinomiais para precariedade do esgotamento sanitário"
+  ) |>
+  tab_source_note(
+    
+    source_note =
+      paste0(
+        "Nota: coeficientes na escala logit e erros-padrão entre parênteses. ",
+        "OR = razão de chances; IC95% = intervalo de confiança de 95%. ",
+        "* p < 0,05; ** p < 0,01; *** p < 0,001. ",
+        "Modelo 1 inclui a proporção de população negra. ",
+        "Modelo 2 acrescenta o logaritmo do rendimento médio. ",
+        "Fonte: elaboração própria a partir do Censo Demográfico 2022/IBGE."
+      )
+  )
+
+
+tabela_2
+
+
+# Exportação
+gtsave(
+  tabela_2,
+  "resultados/tabela_2_modelos.html"
+)
+
+
+write.csv(
+  tabela_modelos,
+  "resultados/tabela_2_modelos.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 18. FIGURA 1 - DESIGUALDADES TERRITORIAIS EM TERESINA
+# ============================================================
+#
+# Os painéis A, B e C apresentam a distribuição dos setores
+# censitários em quartis segundo:
+#
+# A - precariedade do esgotamento sanitário;
+# B - proporção de população negra;
+# C - rendimento médio das pessoas responsáveis.
+#
+# O painel D identifica os setores que pertencem
+# simultaneamente:
+#
+# - ao quartil superior de população negra;
+# - ao quartil inferior de rendimento;
+# - ao quartil superior de precariedade sanitária.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 18.1 MALHA DOS SETORES CENSITÁRIOS
+# ------------------------------------------------------------
+
+setores_teresina <- geobr::read_census_tract(
+  code_tract =
+    cod_teresina,
+  
+  year =
+    2022,
+  
+  simplified =
+    TRUE
+) |>
+  mutate(
+    code_tract =
+      as.character(
+        code_tract
+      )
+  )
+
+
+# Limite externo do município
+limite_teresina <- setores_teresina |>
+  summarise(
+    geometry =
+      sf::st_union(
+        geometry
+      )
+  )
+
+
+# ------------------------------------------------------------
+# 18.2 PONTOS DE CORTE DOS QUARTIS
+# ------------------------------------------------------------
+
+breaks_esgoto <- quantile(
+  dados_final$pct_esgoto_inad,
+  probs = c(
+    0,
+    0.25,
+    0.50,
+    0.75,
+    1
+  ),
+  na.rm = TRUE,
+  names = FALSE
+)
+
+
+breaks_negra <- quantile(
+  dados_final$pct_negra,
+  probs = c(
+    0,
+    0.25,
+    0.50,
+    0.75,
+    1
+  ),
+  na.rm = TRUE,
+  names = FALSE
+)
+
+
+breaks_renda <- quantile(
+  dados_final$renda_resp,
+  probs = c(
+    0,
+    0.25,
+    0.50,
+    0.75,
+    1
+  ),
+  na.rm = TRUE,
+  names = FALSE
+)
+
+
+breaks_esgoto
+breaks_negra
+breaks_renda
+
+
+# Verificar se os cinco pontos de corte são distintos
+stopifnot(
+  length(
+    unique(
+      breaks_esgoto
+    )
+  ) == 5,
+  
+  length(
+    unique(
+      breaks_negra
+    )
+  ) == 5,
+  
+  length(
+    unique(
+      breaks_renda
+    )
+  ) == 5
+)
+
+
+# ------------------------------------------------------------
+# 18.3 CLASSIFICAÇÃO EM QUARTIS
+# ------------------------------------------------------------
+
+dados_mapa <- dados_final |>
+  mutate(
+    
+    q_esgoto =
+      cut(
+        pct_esgoto_inad,
+        breaks = breaks_esgoto,
+        include.lowest = TRUE,
+        labels = c(
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q4"
+        )
+      ),
+    
+    q_negra =
+      cut(
+        pct_negra,
+        breaks = breaks_negra,
+        include.lowest = TRUE,
+        labels = c(
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q4"
+        )
+      ),
+    
+    q_renda =
+      cut(
+        renda_resp,
+        breaks = breaks_renda,
+        include.lowest = TRUE,
+        labels = c(
+          "Q1",
+          "Q2",
+          "Q3",
+          "Q4"
+        )
+      )
+  )
+
+
+# ------------------------------------------------------------
+# 18.4 SOBREPOSIÇÃO DAS TRÊS CONDIÇÕES
+# ------------------------------------------------------------
+
+dados_mapa <- dados_mapa |>
+  mutate(
+    
+    sobreposicao_tripla =
+      q_negra == "Q4" &
+      q_renda == "Q1" &
+      q_esgoto == "Q4",
+    
+    sobreposicao_tripla =
+      factor(
+        sobreposicao_tripla,
+        
+        levels = c(
+          FALSE,
+          TRUE
+        ),
+        
+        labels = c(
+          "Demais setores",
+          "Três condições"
+        )
+      )
+  )
+
+
+table(
+  dados_mapa$sobreposicao_tripla
+)
+
+
+# ------------------------------------------------------------
+# 18.5 JUNÇÃO COM A MALHA CARTOGRÁFICA
+# ------------------------------------------------------------
+
+mapa_df <- setores_teresina |>
+  inner_join(
+    dados_mapa,
+    by = "code_tract"
+  )
+
+
+nrow(
+  mapa_df
+)
+
+
+# ------------------------------------------------------------
+# 18.6 PONTOS DE CORTE DO PAINEL D
+# ------------------------------------------------------------
+
+q75_negra <-
+  breaks_negra[4]
+
+
+q25_renda <-
+  breaks_renda[2]
+
+
+q75_esgoto <-
+  breaks_esgoto[4]
+
+
+pontos_corte_mapa <- tibble(
+  
+  criterio = c(
+    "Quartil superior de população negra",
+    "Quartil inferior de rendimento",
+    "Quartil superior de precariedade sanitária"
+  ),
+  
+  ponto_corte = c(
+    q75_negra,
+    q25_renda,
+    q75_esgoto
+  )
+)
+
+
+pontos_corte_mapa
+
+
+# ------------------------------------------------------------
+# 18.7 AUDITORIA DO PAINEL D
+# ------------------------------------------------------------
+
+auditoria_mapa_d <- mapa_df |>
+  sf::st_drop_geometry() |>
+  filter(
+    sobreposicao_tripla ==
+      "Três condições"
+  ) |>
+  summarise(
+    
+    setores =
+      n(),
+    
+    erro_negra =
+      sum(
+        pct_negra <
+          q75_negra,
+        na.rm = TRUE
+      ),
+    
+    erro_renda =
+      sum(
+        renda_resp >
+          q25_renda,
+        na.rm = TRUE
+      ),
+    
+    erro_esgoto =
+      sum(
+        pct_esgoto_inad <
+          q75_esgoto,
+        na.rm = TRUE
+      )
+  )
+
+
+auditoria_mapa_d
+
+
+# ------------------------------------------------------------
+# 18.8 PERFIL DOS SETORES COM SOBREPOSIÇÃO
+# ------------------------------------------------------------
+
+perfil_sobreposicao_tripla <- mapa_df |>
+  sf::st_drop_geometry() |>
+  group_by(
+    sobreposicao_tripla
+  ) |>
+  summarise(
+    
+    setores =
+      n(),
+    
+    negra_media =
+      mean(
+        pct_negra,
+        na.rm = TRUE
+      ),
+    
+    renda_media =
+      mean(
+        renda_resp,
+        na.rm = TRUE
+      ),
+    
+    esgoto_inadequado_medio =
+      mean(
+        pct_esgoto_inad,
+        na.rm = TRUE
+      ),
+    
+    .groups =
+      "drop"
+  )
+
+
+perfil_sobreposicao_tripla
+
+
+# ------------------------------------------------------------
+# 18.9 RÓTULOS DOS QUARTIS
+# ------------------------------------------------------------
+
+rotulos_quartis <- c(
+  "Q1\nmenor",
+  "Q2",
+  "Q3",
+  "Q4\nmaior"
+)
+
+
+# ------------------------------------------------------------
+# 18.10 TEMA COMUM
+# ------------------------------------------------------------
+
+tema_mapa <- theme_void() +
+  theme(
+    
+    plot.title =
+      element_text(
+        face = "bold",
+        size = 12.5,
+        hjust = 0.5,
+        margin = margin(
+          b = 6
+        )
+      ),
+    
+    legend.position =
+      "bottom",
+    
+    legend.title =
+      element_text(
+        size = 9.5,
+        face = "bold",
+        hjust = 0.5
+      ),
+    
+    legend.text =
+      element_text(
+        size = 9
+      ),
+    
+    legend.key.height =
+      grid::unit(
+        0.45,
+        "cm"
+      ),
+    
+    legend.key.width =
+      grid::unit(
+        0.75,
+        "cm"
+      ),
+    
+    plot.margin =
+      margin(
+        2,
+        5,
+        2,
+        5
+      )
+  )
+
+
+# ============================================================
+# 18.11 PAINEL A - PRECARIEDADE SANITÁRIA
+# ============================================================
+
+mapa_a <- ggplot() +
+  
+  geom_sf(
+    data = mapa_df,
+    aes(
+      fill = q_esgoto
+    ),
+    color = NA
+  ) +
+  
+  geom_sf(
+    data = limite_teresina,
+    fill = NA,
+    color = "grey40",
+    linewidth = 0.25
+  ) +
+  
+  scale_fill_viridis_d(
+    option = "C",
+    direction = 1,
+    labels = rotulos_quartis,
+    name = "Esgotamento inadequado",
+    
+    guide =
+      guide_legend(
+        title.position = "top",
+        title.hjust = 0.5,
+        nrow = 1,
+        byrow = TRUE
+      )
+  ) +
+  
+  labs(
+    title =
+      "A. Precariedade sanitária"
+  ) +
+  
+  tema_mapa
+
+
+# ============================================================
+# 18.12 PAINEL B - COMPOSIÇÃO RACIAL
+# ============================================================
+
+mapa_b <- ggplot() +
+  
+  geom_sf(
+    data = mapa_df,
+    aes(
+      fill = q_negra
+    ),
+    color = NA
+  ) +
+  
+  geom_sf(
+    data = limite_teresina,
+    fill = NA,
+    color = "grey40",
+    linewidth = 0.25
+  ) +
+  
+  scale_fill_viridis_d(
+    option = "D",
+    direction = 1,
+    labels = rotulos_quartis,
+    name = "População negra",
+    
+    guide =
+      guide_legend(
+        title.position = "top",
+        title.hjust = 0.5,
+        nrow = 1,
+        byrow = TRUE
+      )
+  ) +
+  
+  labs(
+    title =
+      "B. Composição racial"
+  ) +
+  
+  tema_mapa
+
+
+# ============================================================
+# 18.13 PAINEL C - POSIÇÃO SOCIOECONÔMICA
+# ============================================================
+
+mapa_c <- ggplot() +
+  
+  geom_sf(
+    data = mapa_df,
+    aes(
+      fill = q_renda
+    ),
+    color = NA
+  ) +
+  
+  geom_sf(
+    data = limite_teresina,
+    fill = NA,
+    color = "grey40",
+    linewidth = 0.25
+  ) +
+  
+  scale_fill_viridis_d(
+    option = "B",
+    direction = -1,
+    labels = rotulos_quartis,
+    name = "Rendimento médio",
+    
+    guide =
+      guide_legend(
+        title.position = "top",
+        title.hjust = 0.5,
+        nrow = 1,
+        byrow = TRUE
+      )
+  ) +
+  
+  labs(
+    title =
+      "C. Posição socioeconômica"
+  ) +
+  
+  tema_mapa
+
+
+# ============================================================
+# 18.14 PAINEL D - SOBREPOSIÇÃO DAS TRÊS DESVANTAGENS
+# ============================================================
+
+mapa_d <- ggplot() +
+  
+  geom_sf(
+    data = mapa_df,
+    aes(
+      fill =
+        sobreposicao_tripla
+    ),
+    color = NA
+  ) +
+  
+  geom_sf(
+    data = limite_teresina,
+    fill = NA,
+    color = "grey40",
+    linewidth = 0.25
+  ) +
+  
+  scale_fill_manual(
+    
+    values = c(
+      "Demais setores" =
+        "grey90",
+      
+      "Três condições" =
+        "#990000"
+    ),
+    
+    name = NULL,
+    
+    guide =
+      guide_legend(
+        nrow = 1,
+        byrow = TRUE
+      )
+  ) +
+  
+  labs(
+    title =
+      "D. Sobreposição das três desvantagens"
+  ) +
+  
+  tema_mapa
+
+
+# ------------------------------------------------------------
+# 18.15 NOTA DA FIGURA
+# ------------------------------------------------------------
+
+fonte_figura <-
+  paste0(
+    "Fonte: elaboração própria a partir do ",
+    "Censo Demográfico 2022/IBGE."
+  )
+
+
+nota_texto <- paste0(
+  
+  "Nota: os painéis A, B e C apresentam os setores censitários ",
+  "distribuídos em quartis. O painel D destaca os setores ",
+  "situados simultaneamente no quartil superior de população ",
+  "negra (≥ ",
+  
+  scales::number(
+    q75_negra,
+    accuracy = 0.1,
+    decimal.mark = ","
+  ),
+  
+  "%), no quartil inferior de rendimento médio (≤ R$ ",
+  
+  scales::number(
+    q25_renda,
+    accuracy = 1,
+    big.mark = ".",
+    decimal.mark = ","
+  ),
+  
+  ") e no quartil superior de esgotamento inadequado (≥ ",
+  
+  scales::number(
+    q75_esgoto,
+    accuracy = 0.1,
+    decimal.mark = ","
+  ),
+  
+  "%)."
+)
+
+
+nota_figura <- paste(
+  fonte_figura,
+  
+  stringr::str_wrap(
+    nota_texto,
+    width = 150
+  ),
+  
+  sep = "\n"
+)
+
+
+# ============================================================
+# 18.16 COMPOSIÇÃO DA FIGURA
+# ============================================================
+
+linha_superior <-
+  mapa_a +
+  mapa_b +
+  plot_layout(
+    widths = c(
+      1,
+      1
+    )
+  )
+
+
+linha_inferior <-
+  mapa_c +
+  mapa_d +
+  plot_layout(
+    widths = c(
+      1,
+      1
+    )
+  )
+
+
+figura_1 <-
+  
+  (
+    linha_superior /
+      linha_inferior
+  ) +
+  
+  plot_layout(
+    heights = c(
+      1,
+      1
+    )
+  ) +
+  
+  plot_annotation(
+    
+    title =
+      "Figura 1 - Desigualdades territoriais em Teresina, 2022",
+    
+    subtitle =
+      paste0(
+        "Precariedade sanitária, composição racial, ",
+        "posição socioeconômica e sobreposição territorial"
+      ),
+    
+    caption =
+      nota_figura,
+    
+    theme =
+      theme(
+        
+        plot.title =
+          element_text(
+            face = "bold",
+            size = 16,
+            hjust = 0
+          ),
+        
+        plot.subtitle =
+          element_text(
+            size = 11.5,
+            hjust = 0,
+            margin = margin(
+              b = 10
+            )
+          ),
+        
+        plot.caption =
+          element_text(
+            size = 9,
+            hjust = 0,
+            lineheight = 1.15,
+            margin = margin(
+              t = 10
+            )
+          ),
+        
+        plot.margin =
+          margin(
+            10,
+            12,
+            10,
+            12
+          )
+      )
+  )
+
+
+figura_1
+
+
+# ============================================================
+# 18.17 EXPORTAÇÃO DA FIGURA
+# ============================================================
+
+# PNG
+ggsave(
+  
+  filename =
+    "resultados/figura_1_desigualdades_territoriais.png",
+  
+  plot =
+    figura_1,
+  
+  width =
+    13,
+  
+  height =
+    9.5,
+  
+  units =
+    "in",
+  
+  dpi =
+    400,
+  
+  bg =
+    "white"
+)
+
+
+# PDF vetorial
+ggsave(
+  
+  filename =
+    "resultados/figura_1_desigualdades_territoriais.pdf",
+  
+  plot =
+    figura_1,
+  
+  width =
+    13,
+  
+  height =
+    9.5,
+  
+  units =
+    "in",
+  
+  bg =
+    "white"
+)
+
+
+# ============================================================
+# 19. EXPORTAÇÃO DAS AUDITORIAS
+# ============================================================
+
+write.csv(
+  auditoria_raca,
+  "resultados/auditoria_raca.csv",
+  row.names = FALSE
+)
+
+
+write.csv(
+  auditoria_esgoto,
+  "resultados/auditoria_esgoto.csv",
+  row.names = FALSE
+)
+
+
+write.csv(
+  auditoria_intervalos,
+  "resultados/auditoria_intervalos.csv",
+  row.names = FALSE
+)
+
+
+write.csv(
+  auditoria_base,
+  "resultados/auditoria_base.csv",
+  row.names = FALSE
+)
+
+
+write.csv(
+  auditoria_mapa_d,
+  "resultados/auditoria_mapa_d.csv",
+  row.names = FALSE
+)
+
+
+write.csv(
+  perfil_sobreposicao_tripla,
+  "resultados/perfil_sobreposicao_tripla.csv",
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 20. REGISTRO DA SESSÃO
+# ============================================================
+
+capture.output(
+  sessionInfo(),
+  file =
+    "resultados/sessionInfo.txt"
+)
+
+
+# ============================================================
+# FIM
+# ============================================================
